@@ -178,6 +178,7 @@ function finish(step) {
   if (step === "expr") LESSONS[S.lesson].e.forEach(e => addCard("표현", e[0], e[1], e[2], e[3]));
   if (step === "word") LESSONS[S.lesson].w.forEach(w => addCard("단어", w[0], w[1], w[2], w[3]));
   save(); sub = null; tab = "home"; show("home");
+  if (ghGet("auto") && STEPS.every(s => S.steps[s[0]])) ghUpload();
 }
 const back = `<button class="b" id="back">← 오늘 학습</button>`;
 function bindBack() { if ($("back")) $("back").onclick = () => show("home"); }
@@ -358,10 +359,58 @@ function settings() {
     <p class="muted">기록은 이 폰의 브라우저에 저장됩니다. 폰을 바꾸거나 앱 데이터를 지우기 전에 아래 글자를 복사해 두세요.</p>
     <textarea id="bk" rows="4">${esc(JSON.stringify(S))}</textarea>
     <div class="row" style="margin-top:8px"><button class="b" id="cp">복사</button><button class="b" id="rs">붙여 넣은 내용으로 복원</button></div>
-    <p class="muted" id="msg"></p></div>`;
+    <p class="muted" id="msg"></p></div>
+  <div class="card"><div class="label">GitHub에 기록 올리기</div>
+    <p class="muted">학습 기록을 개인 저장소의 progress.json에 올립니다. 토큰은 이 폰에만 저장됩니다.</p>
+    <label class="muted" for="gh-repo">저장소</label>
+    <input id="gh-repo" value="${esc(ghGet("repo") || "hirotop00/nihongo-progress")}">
+    <label class="muted" for="gh-token">토큰</label>
+    <input id="gh-token" type="password" autocomplete="off" placeholder="github_pat_..." value="${esc(ghGet("token"))}">
+    <label class="row" style="margin-top:8px"><input id="gh-auto" type="checkbox" style="flex:none;width:auto" ${ghGet("auto") ? "checked" : ""}> 오늘 학습을 마치면 자동으로 올리기</label>
+    <div class="row" style="margin-top:8px"><button class="b p" id="gh-up">지금 올리기</button><button class="b" id="gh-down">GitHub에서 내려받기</button></div>
+    <p class="muted" id="gh-msg">${esc(ghGet("last") ? "마지막으로 올린 때: " + ghGet("last") : "")}</p></div>`;
+  const keep = () => { ghSet("repo", $("gh-repo").value.trim()); ghSet("token", $("gh-token").value.trim()); ghSet("auto", $("gh-auto").checked ? "1" : ""); };
+  ["gh-repo","gh-token","gh-auto"].forEach(id => $(id).onchange = keep);
+  $("gh-up").onclick = async () => { keep(); $("gh-msg").textContent = "올리는 중…"; $("gh-msg").textContent = await ghUpload(); };
+  $("gh-down").onclick = async () => {
+    keep(); $("gh-msg").textContent = "내려받는 중…";
+    try { const f = await ghFile(); if (!f) { $("gh-msg").textContent = "저장소에 아직 기록이 없습니다."; return; }
+      S = Object.assign({ log: {} }, JSON.parse(f.text)); save(); $("gh-msg").textContent = "내려받았습니다. 이 폰의 기록을 GitHub 기록으로 바꿨습니다.";
+    } catch (e) { $("gh-msg").textContent = e.message; }
+  };
   $("go").onclick = () => { const n = +$("jump").value; if (n >= 1 && n <= LESSONS.length) { S.lesson = n - 1; S.steps = {}; save(); show("home"); } };
   $("cp").onclick = () => { navigator.clipboard?.writeText($("bk").value).then(() => $("msg").textContent = "복사했습니다.", () => { $("bk").select(); $("msg").textContent = "글자를 길게 눌러 복사하세요."; }); };
   $("rs").onclick = () => { try { S = Object.assign({ log: {} }, JSON.parse($("bk").value)); save(); $("msg").textContent = "복원했습니다."; } catch (e) { $("msg").textContent = "형식이 맞지 않습니다. 복사한 내용을 그대로 붙여 넣으세요."; } };
+}
+
+// ── GitHub 기록 저장 ──
+function ghGet(k) { try { return localStorage.getItem("gh-" + k) || ""; } catch (e) { return ""; } }
+function ghSet(k, v) { try { localStorage.setItem("gh-" + k, v); } catch (e) {} }
+const b64 = s => { const u = new TextEncoder().encode(s); let t = ""; for (let i = 0; i < u.length; i += 8192) t += String.fromCharCode(...u.subarray(i, i + 8192)); return btoa(t); };
+const unb64 = s => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, "")), c => c.charCodeAt(0)));
+async function ghFetch(method, body) {
+  const repo = ghGet("repo"), token = ghGet("token");
+  if (!repo || !token) throw new Error("설정 탭에서 저장소와 토큰을 먼저 입력하세요.");
+  const r = await fetch(`https://api.github.com/repos/${repo}/contents/progress.json`, {
+    method, cache: "no-store",
+    headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (r.status === 404 && method === "GET") return null;
+  if (r.status === 401) throw new Error("토큰이 맞지 않거나 만료됐습니다. 새 토큰을 넣으세요.");
+  if (r.status === 403 || r.status === 404) throw new Error("이 저장소에 쓸 권한이 없습니다. 토큰의 저장소와 Contents 권한을 확인하세요.");
+  if (!r.ok) throw new Error("GitHub 오류 " + r.status + ". 잠시 뒤 다시 시도하세요.");
+  return r.json();
+}
+async function ghFile() { const j = await ghFetch("GET"); return j ? { sha: j.sha, text: unb64(j.content) } : null; }
+async function ghUpload() {
+  try {
+    const old = await ghFile();
+    const report = Object.assign({ updated: new Date().toISOString() }, S);
+    await ghFetch("PUT", { message: `학습 기록 ${new Date().toLocaleDateString("ko-KR")} · ${S.lesson + 1}과`, content: b64(JSON.stringify(report, null, 1)), sha: old?.sha });
+    const t = new Date().toLocaleString("ko-KR"); ghSet("last", t);
+    return "올렸습니다. " + t;
+  } catch (e) { return e.message; }
 }
 
 stat(); render();
