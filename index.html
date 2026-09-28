@@ -157,8 +157,11 @@ function reading(kana, ko, jp) {
 }
 
 let tab = "home", sub = null;
+const subs = {};
 function show(t) {
-  tab = t; sub = null;
+  // 탭마다 진행 중인 화면을 기억해 두었다가 돌아오면 이어서 보여 줌
+  subs[tab] = sub;
+  tab = t; sub = subs[t] || null;
   ["home","review","words","kana","set"].forEach(x => $("t-" + x).setAttribute("aria-selected", x === t));
   render();
 }
@@ -176,9 +179,9 @@ function render() {
 
 // ── 오늘 학습 ──
 const STEPS = [
-  ["kana", "가나 읽기 퀴즈", "20문제 · 약 5분"],
-  ["expr", "새 표현 3개", "듣고 따라 말하기 · 약 10분"],
-  ["word", "새 단어 10개", "보고 듣기, 뜻 맞히기 · 약 5분"],
+  ["kana", "가나 읽기 퀴즈", "20문제 · 범위 선택 · 약 5분"],
+  ["word", "새 단어 10개", "보고 듣기, 퀴즈 · 약 7분"],
+  ["expr", "새 표현 6개", "오늘 단어로 만든 문장, 듣고 따라 말하기 · 약 12분"],
   ["rev", "복습 카드", "오늘 돌아온 카드 전부 · 약 10분"]
 ];
 const STEP_WRONG = ["wrong", "어제까지 틀린 문제", "맞히면 오답 노트에서 빠집니다"];
@@ -202,10 +205,10 @@ function home() {
     </button>`).join("")}</div>
   ${all ? `<div class="card"><h2>오늘 학습을 마쳤습니다.</h2>
     <p class="muted">새 표현과 단어는 내일부터 복습 카드로 돌아옵니다.</p>
-    ${S.lesson < LESSONS.length - 1 ? `<button class="b p" id="next">다음 과로 넘어가기</button>` : `<p>30과를 모두 마쳤습니다. 복습을 계속하세요.</p>`}</div>` : ""}`;
+    ${S.lesson < LESSONS.length - 1 ? `<button class="b p" id="next">다음 과로 넘어가기</button>` : `<p>${LESSONS.length}과를 모두 마쳤습니다. 복습을 계속하세요.</p>`}</div>` : ""}`;
   document.querySelectorAll("[data-step]").forEach(b => b.onclick = () => {
     if (b.dataset.step === "wrong") { startWrong(pendingWrong(), "daily"); return; }
-    sub = { kana: kanaQuiz, expr: exprStep, word: wordStep, rev: () => { tab = "review"; review(true); } }[b.dataset.step];
+    sub = { kana: kanaQuiz, expr: exprStep, word: wordStep, rev: () => { fromStep = true; sub = null; show("review"); } }[b.dataset.step];
     render();
   });
   if ($("next")) $("next").onclick = () => { S.lesson++; S.steps = {}; save(); render(); };
@@ -219,8 +222,17 @@ function finish(step) {
   if (ghGet("auto") && steps().every(s => S.steps[s[0]])) ghUpload();
 }
 const back = `<button class="b" id="back">← 오늘 학습</button>`;
-function bindBack() { if ($("back")) $("back").onclick = () => show("home"); }
+function bindBack() { if ($("back")) $("back").onclick = () => { sub = null; show("home"); }; }
 
+// 모양이 비슷해 헷갈리는 글자 묶음
+const LOOK_GROUPS = ["さちき", "ぬめ", "ねれわ", "はほ", "るろ", "いり", "こに", "あお", "シツ", "ソン", "クケタ", "ウワ", "アマ", "メナ", "ノソ", "コユ", "チテ"];
+const confusables = ch => { const g = LOOK_GROUPS.find(g => g.includes(ch)); return g ? [...g].filter(c => c !== ch) : []; };
+function soundOf(ch) {
+  const isK = /[\u30A1-\u30F6]/.test(ch);
+  const h = isK ? String.fromCharCode(ch.charCodeAt(0) - 0x60) : ch;
+  for (const row of KANA) for (const c of row) if (c && c[0] === h) return c.slice(1);
+  return null;
+}
 // 가나 퀴즈 해설: 행과 단, 탁점·반탁점, 가타카나 짝, 헷갈리는 글자, 특별한 읽기
 const VOWEL = ["아", "이", "우", "에", "오"];
 const DAKU_BASE = { 11: 1, 12: 2, 13: 3, 14: 5, 15: 5 }; // 탁음 행 → 원래 행
@@ -290,6 +302,9 @@ function kanaExplain(ch, ans, pick) {
   if (isKata) lines.push(`가타카나 ${ch}의 히라가나 짝은 ${hira}입니다. 가타카나는 주로 외래어에 씁니다.`);
   if (SPECIAL[hira]) lines.push(SPECIAL[hira]);
   if (LOOKALIKE[ch]) lines.push("모양 주의: " + LOOKALIKE[ch]);
+  else if (confusables(ch).length) lines.push(`모양 주의: ${confusables(ch).map(c => `${c}(${soundOf(c)})`).join(", ")}와 모양이 비슷합니다. 가나 표에서 나란히 보세요.`);
+  const ex = LESSONS.flatMap(l => l.w).filter(w => w[1].includes(ch)).slice(0, 2);
+  if (ex.length) lines.push("이 글자가 들어간 단어: " + ex.map(w => `<span class="jp">${esc(w[1])}</span>(${esc(w[2])}, ${esc(w[3])})`).join(" · "));
   if (pick !== ans) {
     const hits = [];
     KANA.forEach(row => row.forEach(cell => { if (cell && cell.slice(1) === pick) hits.push(conv(cell[0])); }));
@@ -300,10 +315,39 @@ function kanaExplain(ch, ans, pick) {
 
 // 1단계: 가나 퀴즈
 let kq = null;
+// 퀴즈 범위: 히라가나를 먼저 완전히 익힌 뒤 가타카나로 넘어가도록 나눔
+const KANA_RANGES = {
+  hira: ["히라가나 기본", 0, 11, "hira"],
+  hiraAll: ["히라가나 탁음 포함", 0, 16, "hira"],
+  kata: ["가타카나", 0, 16, "kata"],
+  mix: ["섞어서", 0, 16, "mix"]
+};
 function kanaQuiz() {
+  const range = KANA_RANGES[S.kanaRange] ? S.kanaRange : "hira";
+  const [, from, to, script] = KANA_RANGES[range];
   const pool = [];
-  KANA.forEach(r => r.forEach(c => { if (c) pool.push([c[0], c.slice(1)]); }));
-  if (!kq) kq = { i: 0, ok: 0, qs: shuffle(pool).slice(0, 20).map(p => Math.random() < .5 ? p : [toKata(p[0]), p[1]]), pick: null };
+  KANA.slice(from, to).forEach(r => r.forEach(c => { if (c) pool.push([c[0], c.slice(1)]); }));
+  const conv = p => script === "kata" || (script === "mix" && Math.random() < .5) ? [toKata(p[0]), p[1]] : p;
+  if (!kq) {
+    const inRange = ch => {
+      const isK = /[\u30A1-\u30F6]/.test(ch);
+      if ((script === "hira" && isK) || (script === "kata" && !isK)) return null;
+      const h = isK ? String.fromCharCode(ch.charCodeAt(0) - 0x60) : ch;
+      const p = pool.find(x => x[0] === h);
+      return p ? [ch, p[1], 1] : null;
+    };
+    // 오답 노트에 남은 글자 먼저, 그다음 최근 2주 안에 빠진 글자
+    const recent = [
+      ...Object.values(S.wrong || {}).filter(w => w.kind === "가나").sort((a, b) => b.misses - a.misses),
+      ...(S.wrongDone || []).filter(w => w.kind === "가나" && today() - w.removed <= 14).reverse()
+    ].map(w => inRange(w.q)).filter(Boolean).filter((x, i, a) => a.findIndex(y => y[0] === x[0]) === i).slice(0, 5);
+    const rest = shuffle(pool).map(conv).filter(x => !recent.some(r => r[0] === x[0])).slice(0, 20 - recent.length);
+    kq = { i: 0, ok: 0, qs: shuffle([...recent, ...rest]), pick: null };
+  }
+  // 첫 문제를 풀기 전에만 범위를 바꿀 수 있음
+  const rangeBar = kq.i === 0 && !kq.pick
+    ? `<div class="seg" style="grid-template-columns:repeat(4,1fr)">${Object.entries(KANA_RANGES).map(([k, r]) => `<button data-range="${k}" aria-selected="${k === range}">${r[0]}</button>`).join("")}</div>`
+    : `<div class="muted">범위: ${KANA_RANGES[range][0]}</div>`;
   if (kq.i >= kq.qs.length) {
     const r = kq; kq = null;
     $("main").innerHTML = `<div class="card flash"><div class="label">결과</div><div class="big">${r.ok} / ${r.qs.length}</div>
@@ -313,15 +357,20 @@ function kanaQuiz() {
     $("again").onclick = () => render();
     return;
   }
-  const [ch, ans] = kq.qs[kq.i];
-  if (!kq.opts) kq.opts = shuffle([ans, ...shuffle(pool.map(p => p[1]).filter(x => x !== ans)).filter((x, i, a) => a.indexOf(x) === i).slice(0, 3)]);
-  $("main").innerHTML = `${back}
-  <div class="card flash"><div class="label">${kq.i + 1} / ${kq.qs.length} · 맞힘 ${kq.ok}</div>
+  const [ch, ans, fromWrong] = kq.qs[kq.i];
+  if (!kq.opts) {
+    const twins = confusables(ch).map(soundOf).filter(x => x && x !== ans);
+    const others = shuffle(pool.map(p => p[1]).filter(x => x !== ans && !twins.includes(x)));
+    kq.opts = shuffle([ans, ...[...new Set([...twins, ...others])].slice(0, 3)]);
+  }
+  $("main").innerHTML = `${back}${rangeBar}
+  <div class="card flash"><div class="label">${kq.i + 1} / ${kq.qs.length} · 맞힘 ${kq.ok}${fromWrong ? ' · <span class="pill">지난번 틀린 글자</span>' : ""}</div>
     <div class="big jp" style="font-size:64px" data-say="${ch}">${ch}</div>${spk(ch)}</div>
   <div class="choices">${kq.opts.map(o => `<button class="b ${kq.pick ? (o === ans ? "ok" : o === kq.pick ? "ng" : "") : ""}" data-o="${esc(o)}" ${kq.pick ? "disabled" : ""}>${esc(o)}</button>`).join("")}</div>
   ${kq.pick ? `<div class="card explain ${kq.pick === ans ? "right" : "wrong"}">${kanaExplain(ch, ans, kq.pick)}</div>
   <button class="b p" id="nx">다음</button>` : ""}`;
   bindBack();
+  document.querySelectorAll("[data-range]").forEach(b => b.onclick = () => { S.kanaRange = b.dataset.range; save(); kq = null; render(); });
   document.querySelectorAll("[data-o]").forEach(b => b.onclick = () => {
     kq.pick = b.dataset.o; if (kq.pick === ans) kq.ok++; else addWrong("가나|" + ch, { kind: "가나", q: ch, a: ans }); speak(ch); render();
   });
@@ -332,6 +381,12 @@ function kanaQuiz() {
 let ex = null;
 function exprStep() {
   const E = LESSONS[S.lesson].e;
+  // 이 문장에 들어 있는 오늘의 단어 (동사·형용사는 한자 부분만 비교: 食べる → 食)
+  const usedWords = jp => LESSONS[S.lesson].w.filter(w => {
+    const t = w[0].replace(/^〜/, "");
+    const stem = /[一-鿿]/.test(t) ? t.replace(/[ぁ-ゖ]+$/, "") : t;
+    return stem.length >= (/[一-鿿]/.test(stem) ? 1 : 2) && jp.includes(stem);
+  });
   if (!ex) ex = { i: 0, c: 0, hide: false };
   const [jp, kana, ko, mean, note] = E[ex.i];
   $("main").innerHTML = `${back}
@@ -341,6 +396,7 @@ function exprStep() {
     ${reading(kana, ko, jp)}
     <div class="ko">${esc(mean)}</div>
     ${note ? `<div class="note">${esc(note)}</div>` : ""}
+    ${usedWords(jp).length ? `<div class="row" style="margin-top:10px"><span class="muted">오늘 단어</span>${usedWords(jp).map(w => `<button class="spk jp" data-say="${esc(w[1])}">${esc(w[1])} · ${esc(w[3])}</button>`).join("")}</div>` : ""}
     <div class="row" style="margin-top:12px">
       <button class="b p" data-say="${esc(kana)}">▶ 발음 듣기</button>
       <button class="b" id="slow">▶ 느리게</button>
@@ -486,7 +542,7 @@ function wrongQuiz() {
     $("main").innerHTML = `<div class="card flash"><div class="label">결과</div><div class="big">${r ? r.ok : 0} / ${r ? r.list.length : 0}</div>
       <div class="muted">맞힌 문제는 오답 노트에서 빠졌습니다. 틀린 문제는 내일 다시 나옵니다.</div></div>
       <div class="row"><button class="b p" id="fin">완료</button></div>`;
-    $("fin").onclick = () => { if (r && r.source === "daily") finish("wrong"); else show("words"); };
+    $("fin").onclick = () => { sub = null; if (r && r.source === "daily") finish("wrong"); else show("words"); };
     return;
   }
   const { key, item } = wz.list[wz.i];
@@ -506,7 +562,7 @@ function wrongQuiz() {
   <div class="choices">${wz.opts.map(o => `<button class="b ${wz.pick ? (o === item.a ? "ok" : o === wz.pick ? "ng" : "") : ""}" data-o="${esc(o)}" ${wz.pick ? "disabled" : ""}>${esc(o)}</button>`).join("")}</div>
   ${wz.pick && isKana ? `<div class="card explain ${wz.pick === item.a ? "right" : "wrong"}">${kanaExplain(item.q, item.a, wz.pick)}</div>` : ""}
   ${wz.pick ? `<button class="b p" id="nx">다음</button>` : ""}`;
-  $("wback").onclick = () => { wz = null; show(tab); };
+  $("wback").onclick = () => { wz = null; sub = null; show(tab); };
   document.querySelectorAll("[data-o]").forEach(b => b.onclick = () => {
     wz.pick = b.dataset.o;
     speak(item.q);
