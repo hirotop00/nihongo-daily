@@ -92,17 +92,27 @@ function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e
 function ensureDay() { if (S.stepsDay !== today()) { S.stepsDay = today(); S.steps = {}; save(); } }
 
 // 발음 듣기
-function speak(text) {
-  try {
-    speechSynthesis.cancel();
+// 발음 재생. 안드로이드 Chrome은 정지 직후 재생을 무시할 때가 있어 정지가 필요할 때만 잠깐 쉬었다가 재생한다
+let jaVoice = null;
+function pickVoice() {
+  try { const vs = speechSynthesis.getVoices(); jaVoice = vs.find(v => /^ja/i.test(v.lang)) || vs.find(v => /japan|日本/i.test(v.name)) || null; } catch (e) {}
+}
+try { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; } catch (e) {}
+function speak(text, rate) {
+  if (!("speechSynthesis" in window)) return;
+  const go = () => {
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = "ja-JP"; u.rate = 0.85;
-    const v = speechSynthesis.getVoices().find(v => v.lang && v.lang.startsWith("ja"));
-    if (v) u.voice = v;
+    u.lang = "ja-JP"; u.rate = rate || 0.85;
+    if (!jaVoice) pickVoice();
+    if (jaVoice) u.voice = jaVoice;
+    speechSynthesis.resume();
     speechSynthesis.speak(u);
+  };
+  try {
+    if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); setTimeout(go, 150); }
+    else go();
   } catch (e) {}
 }
-try { speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices(); } catch (e) {}
 const spk = t => `<button class="spk" data-say="${esc(t)}" >▶ 발음</button>`;
 document.addEventListener("click", e => { const b = e.target.closest("[data-say]"); if (b) speak(b.dataset.say); });
 
@@ -238,7 +248,7 @@ function exprStep() {
   <div class="row"><button class="b" id="prev" ${ex.i === 0 ? "disabled" : ""}>이전</button>
     <button class="b p" id="nx" ${ex.c < 5 ? "disabled" : ""}>${ex.i === E.length - 1 ? "완료" : "다음 표현"}</button></div>`;
   bindBack();
-  $("slow").onclick = () => { try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(kana); u.lang = "ja-JP"; u.rate = .55; speechSynthesis.speak(u); } catch (e) {} };
+  $("slow").onclick = () => speak(kana, 0.55);
   $("said").onclick = () => { ex.c = Math.min(5, ex.c + 1); if (ex.c < 5) speak(kana); render(); };
   $("prev").onclick = () => { ex.i--; ex.c = 5; render(); };
   $("nx").onclick = () => { if (ex.i === E.length - 1) { ex = null; finish("expr"); } else { ex.i++; ex.c = 0; render(); } };
@@ -355,6 +365,10 @@ function settings() {
   <div class="card"><div class="label">기록</div><p style="margin:4px 0">학습한 날 ${days}일 · 현재 ${S.lesson + 1}과</p>
     <label class="muted" for="jump">과 이동</label>
     <div class="row"><input id="jump" type="number" min="1" max="${LESSONS.length}" value="${S.lesson + 1}" style="max-width:100px"><button class="b" id="go">이동</button></div></div>
+  <div class="card"><div class="label">발음 테스트</div>
+    <p class="muted">소리가 나지 않을 때 눌러 보세요. 이 폰의 일본어 음성 상태를 보여 줍니다.</p>
+    <button class="b p" id="tts">▶ こんにちは 재생</button>
+    <p class="muted" id="tts-msg"></p></div>
   <div class="card"><div class="label">백업</div>
     <p class="muted">기록은 이 폰의 브라우저에 저장됩니다. 폰을 바꾸거나 앱 데이터를 지우기 전에 아래 글자를 복사해 두세요.</p>
     <textarea id="bk" rows="4">${esc(JSON.stringify(S))}</textarea>
@@ -377,6 +391,14 @@ function settings() {
     try { const f = await ghFile(); if (!f) { $("gh-msg").textContent = "저장소에 아직 기록이 없습니다."; return; }
       S = Object.assign({ log: {} }, JSON.parse(f.text)); save(); $("gh-msg").textContent = "내려받았습니다. 이 폰의 기록을 GitHub 기록으로 바꿨습니다.";
     } catch (e) { $("gh-msg").textContent = e.message; }
+  };
+  $("tts").onclick = () => {
+    if (!("speechSynthesis" in window)) { $("tts-msg").textContent = "이 브라우저는 음성 재생을 지원하지 않습니다. Chrome으로 열어 주세요."; return; }
+    pickVoice(); speak("こんにちは");
+    const vs = speechSynthesis.getVoices();
+    $("tts-msg").textContent = jaVoice
+      ? `일본어 음성: ${jaVoice.name}. 소리가 안 나면 폰 볼륨(미디어 볼륨)과 무음 모드를 확인하세요.`
+      : `일본어 음성을 찾지 못했습니다 (전체 음성 ${vs.length}개). 폰 설정의 텍스트 음성 변환에서 Google 음성 서비스의 일본어 음성 데이터를 설치하세요.`;
   };
   $("go").onclick = () => { const n = +$("jump").value; if (n >= 1 && n <= LESSONS.length) { S.lesson = n - 1; S.steps = {}; save(); show("home"); } };
   $("cp").onclick = () => { navigator.clipboard?.writeText($("bk").value).then(() => $("msg").textContent = "복사했습니다.", () => { $("bk").select(); $("msg").textContent = "글자를 길게 눌러 복사하세요."; }); };
