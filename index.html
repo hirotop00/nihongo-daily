@@ -61,6 +61,18 @@ input,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border
 .kgrid div{padding:5px 0;border:1px solid var(--line);border-radius:6px;font-size:19px;min-height:52px}
 .kgrid div.empty{border-color:transparent}
 .kgrid small{display:block;font-size:11px;color:var(--mute);line-height:1.3}
+.explain{display:grid;gap:6px;font-size:14px;border-left:4px solid var(--line)}
+.explain p{margin:0}
+.explain.right{border-left-color:var(--good)}
+.explain.wrong{border-left-color:var(--bad)}
+.explain b{font-size:16px}
+.marks{display:grid;gap:10px;font-size:14px}
+.marks .mk{font-size:28px;color:var(--ai);margin-right:6px;vertical-align:middle}
+.marks .ex{color:var(--mute);margin-top:2px}
+.kanji{font-size:14px;margin-top:2px}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:4px;background:var(--card);border:1px solid var(--line);border-radius:10px}
+.seg button{font:inherit;border:0;background:none;color:var(--mute);padding:8px 4px;border-radius:7px;cursor:pointer}
+.seg button[aria-selected="true"]{background:var(--ai);color:var(--bg);font-weight:600}
 .kgrid .h{border:0;font-size:12px;color:var(--mute);min-height:0}
 </style>
 </head>
@@ -86,7 +98,7 @@ const today = () => Math.floor((Date.now() - new Date().getTimezoneOffset() * 6e
 
 // 상태: lesson 현재 과, steps 오늘 단계 완료 여부, cards 복습 카드, log 날짜별 학습 기록
 const KEY = "nihongo-v2";
-let S = { lesson: 0, stepsDay: -1, steps: {}, cards: {}, log: {} };
+let S = { lesson: 0, stepsDay: -1, steps: {}, cards: {}, log: {}, wrong: {}, wrongDone: [] };
 try { const v = localStorage.getItem(KEY); if (v) S = Object.assign(S, JSON.parse(v)); } catch (e) {}
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} stat(); }
 function ensureDay() { if (S.stepsDay !== today()) { S.stepsDay = today(); S.steps = {}; save(); } }
@@ -95,18 +107,30 @@ function ensureDay() { if (S.stepsDay !== today()) { S.stepsDay = today(); S.ste
 // 발음 재생. 안드로이드 Chrome은 정지 직후 재생을 무시할 때가 있어 정지가 필요할 때만 잠깐 쉬었다가 재생한다
 let jaVoice = null;
 function pickVoice() {
-  try { const vs = speechSynthesis.getVoices(); jaVoice = vs.find(v => /^ja/i.test(v.lang)) || vs.find(v => /japan|日本/i.test(v.name)) || null; } catch (e) {}
+  // 일본어 음성 중 PC·폰에 설치된 음성을 먼저 쓰고, 없으면 온라인 음성을 쓴다
+  try {
+    const vs = speechSynthesis.getVoices().filter(v => /^ja/i.test(v.lang) || /japan|日本/i.test(v.name));
+    jaVoice = vs.find(v => v.localService) || vs[0] || null;
+  } catch (e) {}
 }
 try { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; } catch (e) {}
-function speak(text, rate) {
+// Chrome은 재생 중인 발음 객체를 붙잡아 두지 않으면 재생이 끊기거나 멈춘 상태로 굳는 문제가 있다
+let lastUtter = null;
+function speak(text, rate, retried) {
   if (!("speechSynthesis" in window)) return;
   const go = () => {
     const u = new SpeechSynthesisUtterance(text);
     u.lang = "ja-JP"; u.rate = rate || 0.85;
     if (!jaVoice) pickVoice();
     if (jaVoice) u.voice = jaVoice;
+    let started = false;
+    u.onstart = () => { started = true; };
+    lastUtter = u;
     speechSynthesis.resume();
     speechSynthesis.speak(u);
+    // 1.5초 안에 재생이 시작되지 않으면 멈춘 상태로 보고 한 번 풀고 다시 재생
+    // Edge 온라인 음성은 시작 신호가 늦게 오므로 실제로 재생 중이 아닐 때만 다시 시도
+    if (!retried) setTimeout(() => { if (!started && !speechSynthesis.speaking && lastUtter === u) { speechSynthesis.cancel(); setTimeout(() => speak(text, rate, true), 150); } }, 1500);
   };
   try {
     if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); setTimeout(go, 150); }
@@ -145,7 +169,7 @@ function render() {
   window.scrollTo(0, 0);
   if (tab === "home") sub ? sub() : home();
   else if (tab === "review") review();
-  else if (tab === "words") words();
+  else if (tab === "words") sub ? sub() : words();
   else if (tab === "kana") kanaTable();
   else settings();
 }
@@ -157,8 +181,11 @@ const STEPS = [
   ["word", "새 단어 10개", "보고 듣기, 뜻 맞히기 · 약 5분"],
   ["rev", "복습 카드", "오늘 돌아온 카드 전부 · 약 10분"]
 ];
+const STEP_WRONG = ["wrong", "어제까지 틀린 문제", "맞히면 오답 노트에서 빠집니다"];
+function steps() { return pendingWrong().length || S.steps.wrong ? [STEP_WRONG, ...STEPS] : STEPS; }
 function home() {
   const L = LESSONS[S.lesson];
+  const STEPS = steps();
   const doneN = STEPS.filter(s => S.steps[s[0]]).length;
   const all = doneN === STEPS.length;
   $("main").innerHTML = `
@@ -177,6 +204,7 @@ function home() {
     <p class="muted">새 표현과 단어는 내일부터 복습 카드로 돌아옵니다.</p>
     ${S.lesson < LESSONS.length - 1 ? `<button class="b p" id="next">다음 과로 넘어가기</button>` : `<p>30과를 모두 마쳤습니다. 복습을 계속하세요.</p>`}</div>` : ""}`;
   document.querySelectorAll("[data-step]").forEach(b => b.onclick = () => {
+    if (b.dataset.step === "wrong") { startWrong(pendingWrong(), "daily"); return; }
     sub = { kana: kanaQuiz, expr: exprStep, word: wordStep, rev: () => { tab = "review"; review(true); } }[b.dataset.step];
     render();
   });
@@ -188,10 +216,87 @@ function finish(step) {
   if (step === "expr") LESSONS[S.lesson].e.forEach(e => addCard("표현", e[0], e[1], e[2], e[3]));
   if (step === "word") LESSONS[S.lesson].w.forEach(w => addCard("단어", w[0], w[1], w[2], w[3]));
   save(); sub = null; tab = "home"; show("home");
-  if (ghGet("auto") && STEPS.every(s => S.steps[s[0]])) ghUpload();
+  if (ghGet("auto") && steps().every(s => S.steps[s[0]])) ghUpload();
 }
 const back = `<button class="b" id="back">← 오늘 학습</button>`;
 function bindBack() { if ($("back")) $("back").onclick = () => show("home"); }
+
+// 가나 퀴즈 해설: 행과 단, 탁점·반탁점, 가타카나 짝, 헷갈리는 글자, 특별한 읽기
+const VOWEL = ["아", "이", "우", "에", "오"];
+const DAKU_BASE = { 11: 1, 12: 2, 13: 3, 14: 5, 15: 5 }; // 탁음 행 → 원래 행
+const LOOKALIKE = {
+  "さ": "ち(치)와 좌우가 뒤집힌 모양입니다. き(키)와도 비슷하지만 き는 가로줄이 두 개입니다.",
+  "ち": "さ(사)와 좌우가 뒤집힌 모양입니다.",
+  "き": "さ(사)와 비슷하지만 가로줄이 두 개입니다.",
+  "ぬ": "め(메)와 비슷하지만 ぬ는 끝에 작은 고리가 있습니다.",
+  "め": "ぬ(누)와 비슷하지만 め는 끝에 고리가 없습니다.",
+  "ね": "れ(레), わ(와)와 왼쪽이 같습니다. ね는 끝에 고리가 있습니다.",
+  "れ": "ね(네), わ(와)와 왼쪽이 같습니다. れ는 끝이 바깥으로 뻗습니다.",
+  "わ": "ね(네), れ(레)와 왼쪽이 같습니다. わ는 끝이 둥글게 닫힙니다.",
+  "は": "ほ(호)와 비슷하지만 ほ는 오른쪽 위에 가로줄이 하나 더 있습니다.",
+  "ほ": "は(하)와 비슷하지만 오른쪽 위에 가로줄이 하나 더 있습니다.",
+  "る": "ろ(로)와 비슷하지만 る는 끝에 작은 고리가 있습니다.",
+  "ろ": "る(루)와 비슷하지만 ろ는 끝에 고리가 없습니다.",
+  "い": "り(리)와 비슷하지만 り는 오른쪽 획이 길게 내려옵니다.",
+  "り": "い(이)와 비슷하지만 오른쪽 획이 길게 내려옵니다.",
+  "シ": "ツ(츠)와 헷갈리기 쉽습니다. シ는 점이 왼쪽에 세로로 놓이고 마지막 획이 아래에서 위로 올라갑니다.",
+  "ツ": "シ(시)와 헷갈리기 쉽습니다. ツ는 점이 위쪽에 가로로 놓이고 마지막 획이 위에서 아래로 내려옵니다.",
+  "ソ": "ン(응)과 헷갈리기 쉽습니다. ソ는 두 획이 모두 위에서 아래로 내려옵니다.",
+  "ン": "ソ(소)와 헷갈리기 쉽습니다. ン은 두 번째 획이 아래에서 위로 올라갑니다.",
+  "ク": "ケ(케), タ(타)와 비슷합니다. ク는 안쪽에 획이 없습니다.",
+  "タ": "ク(쿠)와 비슷하지만 안쪽에 짧은 획이 하나 더 있습니다.",
+  "ケ": "ク(쿠)와 비슷하지만 오른쪽 획이 위로 뻗지 않고 옆으로 뻗습니다.",
+  "ウ": "ワ(와)와 비슷하지만 ウ는 위에 짧은 점이 하나 있습니다.",
+  "ワ": "ウ(우)와 비슷하지만 위에 점이 없습니다.",
+  "ノ": "비스듬한 획 하나로 된 글자입니다.",
+  "メ": "ナ(나)와 비슷하지만 メ는 두 획이 X자로 엇갈립니다.",
+  "ナ": "メ(메)와 비슷하지만 가로줄과 세로획이 十자에 가깝게 만납니다.",
+  "ア": "マ(마)와 비슷하지만 ア는 가운데에서 아래로 긴 획이 내려옵니다.",
+  "マ": "ア(아)와 비슷하지만 아래가 짧게 꺾여 끝납니다."
+};
+const SPECIAL = {
+  "し": "로마자로는 shi로 적습니다. 한국어 '시'와 거의 같습니다.",
+  "ち": "로마자로는 chi입니다. 한국어 '치'와 거의 같습니다.",
+  "つ": "한국어에 없는 소리라 '츠'로 적지만, 실제로는 '쯔'와 '츠' 사이로 소리 납니다.",
+  "ふ": "입술을 살짝 모아 바람을 내보내는 소리입니다. '후'와 '흐' 사이로 들립니다.",
+  "は": "조사 '~은/는'으로 쓸 때는 '와'로 읽습니다. 예: こんにちは(콘니치와).",
+  "へ": "조사 '~로(방향)'로 쓸 때는 '에'로 읽습니다.",
+  "を": "お(오)와 소리가 같습니다. 조사 '~을/를'로만 씁니다.",
+  "ん": "혼자서는 쓰지 않고 앞 글자의 받침처럼 붙습니다. 뒤 글자에 따라 ㄴ, ㅁ, ㅇ으로 들립니다.",
+  "ぢ": "じ(지)와 소리가 같습니다. 거의 쓰지 않습니다.",
+  "づ": "ず(즈)와 소리가 같습니다. 거의 쓰지 않습니다.",
+  "じ": "ぢ도 같은 소리입니다. 보통은 じ를 씁니다.",
+  "ず": "づ도 같은 소리입니다. 보통은 ず를 씁니다."
+};
+function kanaExplain(ch, ans, pick) {
+  const isKata = /[ァ-ヶ]/.test(ch);
+  const hira = isKata ? String.fromCharCode(ch.charCodeAt(0) - 0x60) : ch;
+  let r = -1, c = -1;
+  KANA.forEach((row, ri) => row.forEach((cell, ci) => { if (cell && cell[0] === hira) { r = ri; c = ci; } }));
+  const conv = isKata ? toKata : (x => x);
+  const lines = [];
+  lines.push(`<b>${ch} = ${ans}</b>${pick === ans ? " · 정답입니다." : ` · 고른 답 '${esc(pick)}'는 틀렸습니다.`}`);
+  if (r >= 11) {
+    const baseCell = KANA[DAKU_BASE[r]][c], base = conv(baseCell[0]), bs = baseCell.slice(1);
+    if (r === 15) lines.push(`${base}(${bs})의 오른쪽 위에 작은 동그라미 ゜(반탁점)를 붙인 글자입니다. 반탁점이 붙으면 ㅎ 소리가 ㅍ 소리로 바뀌어 '${ans}'가 됩니다.`);
+    else lines.push(`${base}(${bs})의 오른쪽 위에 점 두 개 ゛(탁점)를 찍은 글자입니다. 탁점이 붙으면 소리가 탁해져 ${
+      r === 11 ? "ㅋ이 ㄱ" : r === 12 ? "ㅅ이 ㅈ" : r === 13 ? "ㅌ이 ㄷ" : "ㅎ이 ㅂ"} 소리가 되므로 '${ans}'로 읽습니다.`);
+  } else if (r >= 0) {
+    const rowHead = conv(KANA[r][0][0]);
+    if (r === 10) lines.push(`ん은 행에 속하지 않는 특별한 글자입니다.`);
+    else if (hira === "を") lines.push(`わ행(와행)에 속하지만 '워'가 아니라 '오'로 읽습니다.`);
+    else lines.push(`${rowHead}행(${KANA[r][0].slice(1)}행)의 '${VOWEL[c]}' 단 글자입니다. 그래서 ${KANA[r][0].slice(1)}행 자음에 '${VOWEL[c]}' 모음이 붙어 '${ans}'로 읽습니다.`);
+  }
+  if (isKata) lines.push(`가타카나 ${ch}의 히라가나 짝은 ${hira}입니다. 가타카나는 주로 외래어에 씁니다.`);
+  if (SPECIAL[hira]) lines.push(SPECIAL[hira]);
+  if (LOOKALIKE[ch]) lines.push("모양 주의: " + LOOKALIKE[ch]);
+  if (pick !== ans) {
+    const hits = [];
+    KANA.forEach(row => row.forEach(cell => { if (cell && cell.slice(1) === pick) hits.push(conv(cell[0])); }));
+    if (hits.length) lines.push(`'${esc(pick)}'로 읽는 글자는 ${hits.join(", ")}입니다.`);
+  }
+  return lines.map(l => `<p>${l}</p>`).join("");
+}
 
 // 1단계: 가나 퀴즈
 let kq = null;
@@ -214,10 +319,11 @@ function kanaQuiz() {
   <div class="card flash"><div class="label">${kq.i + 1} / ${kq.qs.length} · 맞힘 ${kq.ok}</div>
     <div class="big jp" style="font-size:64px" data-say="${ch}">${ch}</div>${spk(ch)}</div>
   <div class="choices">${kq.opts.map(o => `<button class="b ${kq.pick ? (o === ans ? "ok" : o === kq.pick ? "ng" : "") : ""}" data-o="${esc(o)}" ${kq.pick ? "disabled" : ""}>${esc(o)}</button>`).join("")}</div>
-  ${kq.pick ? `<button class="b p" id="nx">다음</button>` : ""}`;
+  ${kq.pick ? `<div class="card explain ${kq.pick === ans ? "right" : "wrong"}">${kanaExplain(ch, ans, kq.pick)}</div>
+  <button class="b p" id="nx">다음</button>` : ""}`;
   bindBack();
   document.querySelectorAll("[data-o]").forEach(b => b.onclick = () => {
-    kq.pick = b.dataset.o; if (kq.pick === ans) kq.ok++; speak(ch); render();
+    kq.pick = b.dataset.o; if (kq.pick === ans) kq.ok++; else addWrong("가나|" + ch, { kind: "가나", q: ch, a: ans }); speak(ch); render();
   });
   if ($("nx")) $("nx").onclick = () => { kq.i++; kq.pick = null; kq.opts = null; render(); };
 }
@@ -249,22 +355,26 @@ function exprStep() {
     <button class="b p" id="nx" ${ex.c < 1 ? "disabled" : ""}>${ex.i === E.length - 1 ? "완료" : "다음 표현"}</button></div>`;
   bindBack();
   $("slow").onclick = () => speak(kana, 0.55);
-  $("said").onclick = () => { ex.c = 1; render(); };
+  const next = () => { if (ex.i === E.length - 1) { ex = null; finish("expr"); } else { ex.i++; ex.c = 0; render(); } };
+  $("said").onclick = next;
   $("prev").onclick = () => { ex.i--; ex.c = 1; render(); };
-  $("nx").onclick = () => { if (ex.i === E.length - 1) { ex = null; finish("expr"); } else { ex.i++; ex.c = 0; render(); } };
+  $("nx").onclick = next;
 }
 
 // 3단계: 새 단어 (목록 → 뜻 맞히기)
 let wq = null;
+// 한자 표기가 가나와 다를 때만 작게 보여 줌
+const kanjiNote = (jp, kana) => jp && jp !== kana ? `<div class="kanji muted jp">한자 ${esc(jp)}</div>` : "";
 function wordStep() {
   const W = LESSONS[S.lesson].w;
   if (!wq) {
     $("main").innerHTML = `${back}
-    <div class="card"><div class="label">새 단어 ${W.length}개 · 각 단어를 눌러 듣고 소리 내어 읽으세요</div>
-    <table>${W.map(w => `<tr><td class="w jp" data-say="${esc(w[1])}">${esc(w[0])}</td><td><div class="jp muted">${w[1] !== w[0] ? esc(w[1]) : ""}</div><div class="ko-read" style="font-size:14px">${esc(w[2])}</div></td><td>${esc(w[3])}</td><td>${spk(w[1])}</td></tr>`).join("")}</table></div>
-    <button class="b p" id="go">뜻 맞히기 시작</button>`;
+    <div class="card"><div class="label">새 단어 ${W.length}개 · 가나를 소리 내어 읽고 눌러서 발음을 확인하세요</div>
+    <table>${W.map(w => `<tr><td class="w jp" data-say="${esc(w[1])}">${esc(w[1])}${w[0] !== w[1] ? `<div class="muted" style="font-size:13px">${esc(w[0])}</div>` : ""}</td><td><div class="ko-read" style="font-size:14px">${esc(w[2])}</div></td><td>${esc(w[3])}</td><td>${spk(w[1])}</td></tr>`).join("")}</table></div>
+    <button class="b p" id="go">퀴즈 시작</button>`;
     bindBack();
-    $("go").onclick = () => { wq = { i: 0, ok: 0, qs: shuffle(W), pick: null }; render(); };
+    // 문제 두 종류: 가나 → 뜻, 뜻 → 가나. 단어마다 한 번씩
+    $("go").onclick = () => { wq = { i: 0, ok: 0, qs: shuffle([...W.map(w => [w, "k2m"]), ...W.map(w => [w, "m2k"])]), pick: null }; render(); };
     return;
   }
   if (wq.i >= wq.qs.length) {
@@ -274,24 +384,35 @@ function wordStep() {
     $("fin").onclick = () => finish("word");
     return;
   }
-  const w = wq.qs[wq.i];
-  const others = shuffle(LESSONS.flatMap(l => l.w).map(x => x[3]).filter(m => m !== w[3])).slice(0, 3);
-  if (!wq.opts) wq.opts = shuffle([w[3], ...others]);
+  const [w, type, retry] = wq.qs[wq.i];
+  const all = LESSONS.flatMap(l => l.w);
+  const ans = type === "k2m" ? w[3] : w[1];
+  if (!wq.opts) {
+    let pool = all.map(x => type === "k2m" ? x[3] : x[1]).filter((x, i, a) => x !== ans && a.indexOf(x) === i);
+    // 가나 선지는 글자 수가 비슷한 것을 골라 모양으로 구별하게 함
+    if (type === "m2k") pool = shuffle(pool).sort((a, b) => Math.abs(a.length - ans.length) - Math.abs(b.length - ans.length)).slice(0, 12);
+    wq.opts = shuffle([ans, ...shuffle(pool).slice(0, 3)]);
+  }
+  const q = type === "k2m"
+    ? `<div class="label">${wq.i + 1} / ${wq.qs.length} · 가나를 읽고 뜻을 고르세요</div>
+       <div class="big jp" data-say="${esc(w[1])}">${esc(w[1])}</div>
+       ${wq.pick ? `<div class="ko-read">${esc(w[2])}</div>${kanjiNote(w[0], w[1])}` : ""}`
+    : `<div class="label">${wq.i + 1} / ${wq.qs.length} · 뜻에 맞는 가나를 고르세요</div>
+       <div class="big">${esc(w[3])}</div>
+       ${wq.pick ? `<div class="jp" style="font-size:22px">${esc(w[1])}</div><div class="ko-read">${esc(w[2])}</div>${kanjiNote(w[0], w[1])}` : ""}`;
   $("main").innerHTML = `${back}
-  <div class="card flash"><div class="label">${wq.i + 1} / ${wq.qs.length}</div>
-    <div class="big jp" data-say="${esc(w[1])}">${esc(w[0])}</div>
-    ${wq.pick ? reading(w[1], w[2], w[0]) : ""}${spk(w[1])}</div>
-  <div class="choices">${wq.opts.map(o => `<button class="b ${wq.pick ? (o === w[3] ? "ok" : o === wq.pick ? "ng" : "") : ""}" data-o="${esc(o)}" ${wq.pick ? "disabled" : ""}>${esc(o)}</button>`).join("")}</div>
+  <div class="card flash">${q}${type === "k2m" || wq.pick ? spk(w[1]) : ""}</div>
+  <div class="choices">${wq.opts.map(o => `<button class="b ${type === "m2k" ? "jp" : ""} ${wq.pick ? (o === ans ? "ok" : o === wq.pick ? "ng" : "") : ""}" data-o="${esc(o)}" ${wq.pick ? "disabled" : ""}>${esc(o)}</button>`).join("")}</div>
   ${wq.pick ? `<button class="b p" id="nx">다음</button>` : ""}`;
   bindBack();
   document.querySelectorAll("[data-o]").forEach(b => b.onclick = () => {
-    wq.pick = b.dataset.o; if (wq.pick === w[3]) wq.ok++; else wq.qs.push(w); speak(w[1]); render();
+    wq.pick = b.dataset.o; if (wq.pick === ans) wq.ok++; else { wq.qs.push([w, type, 1]); if (!retry) addWrong("단어|" + w[1], { kind: "단어", q: w[1], a: w[3], ko: w[2], jp: w[0] }); } speak(w[1]); render();
   });
   if ($("nx")) $("nx").onclick = () => { wq.i++; wq.pick = null; wq.opts = null; render(); };
 }
 
 // ── 복습 ──
-let rq = null, shown = false, fromStep = false;
+let rq = null, shown = false, fromStep = false, rqMissed = new Set();
 function review(step) {
   if (step) fromStep = true;
   if (!rq) rq = shuffle(due());
@@ -308,8 +429,8 @@ function review(step) {
   $("main").innerHTML = `
   <div class="card flash">
     <div class="label">${c.kind} · 남은 카드 ${rq.length} · ${c.box}단계</div>
-    ${reverse ? `<div class="big" style="font-size:24px">${esc(c.mean)}</div><div class="muted">일본어로 말해 보세요</div>` : `<div class="big jp" data-say="${esc(c.kana || c.jp)}">${esc(c.jp)}</div>${spk(c.kana || c.jp)}`}
-    ${shown ? `${reverse ? `<div class="big jp" style="font-size:24px">${esc(c.jp)}</div>` : ""}${reading(c.kana, c.ko, c.jp)}${reverse ? "" : `<div class="ko">${esc(c.mean)}</div>`}${spk(c.kana)}` : ""}
+    ${reverse ? `<div class="big" style="font-size:24px">${esc(c.mean)}</div><div class="muted">일본어로 말해 보세요</div>` : `<div class="big jp" data-say="${esc(c.kana || c.jp)}">${esc(c.kana || c.jp)}</div>${spk(c.kana || c.jp)}`}
+    ${shown ? `${reverse ? `<div class="big jp" style="font-size:24px">${esc(c.kana || c.jp)}</div>` : ""}<div class="ko-read">${esc(c.ko)}</div>${kanjiNote(c.jp, c.kana)}${reverse ? spk(c.kana || c.jp) : `<div class="ko">${esc(c.mean)}</div>`}` : ""}
   </div>
   <div class="row" style="justify-content:center">
     ${shown ? `<button class="b" id="no">몰랐어요</button><button class="b p" id="yes">알았어요</button>` : `<button class="b p" id="sh">정답 보기</button>`}
@@ -323,14 +444,123 @@ function review(step) {
 function grade(ok) {
   const k = rq.shift(), c = S.cards[k];
   if (ok) { c.box = Math.min(c.box + 1, GAP.length - 1); c.due = today() + GAP[c.box]; }
-  else { c.box = 0; c.due = today(); rq.push(k); }
+  else {
+    if (!rqMissed.has(k)) { rqMissed.add(k); addWrong("단어|" + (c.kana || c.jp), { kind: c.kind, q: c.kana || c.jp, a: c.mean, ko: c.ko, jp: c.jp }); }
+    c.box = 0; c.due = today(); rq.push(k);
+  }
   shown = false; save(); review();
+}
+
+// ── 오답 노트 ──
+// S.wrong[key] = { kind, q(문제), a(정답), ko, jp, added(처음 틀린 날), misses(틀린 횟수) }
+// 맞히면 S.wrongDone으로 옮기고, removed(빠진 날)로 남아 있던 날수를 계산
+function addWrong(key, item) {
+  if (!S.wrong) S.wrong = {};
+  const w = S.wrong[key];
+  if (w) { if (w.lastMiss !== today()) { w.misses++; w.lastMiss = today(); } }
+  else S.wrong[key] = Object.assign(item, { added: today(), misses: 1, lastMiss: today() });
+  save();
+}
+const pendingWrong = () => Object.keys(S.wrong || {}).filter(k => S.wrong[k].added < today());
+const keptDays = w => (w.removed ?? today()) - w.added;
+// 주 시작일(월요일)과 표시용 날짜
+const weekStart = d => d - ((d + 3) % 7);
+const dayLabel = d => { const t = new Date(d * DAY); return `${t.getUTCMonth() + 1}월 ${t.getUTCDate()}일`; };
+const allWrong = () => [
+  ...Object.entries(S.wrong || {}).map(([key, item]) => ({ key, item })),
+  ...(S.wrongDone || []).map(d => ({ key: d.key, item: d }))
+];
+
+let wz = null;
+// source: "daily"(오늘 학습) 또는 "week"(주별 복습)
+function startWrong(keys, source, items) {
+  const list = items || keys.map(k => ({ key: k, item: S.wrong[k] }));
+  wz = { list: shuffle(list), i: 0, ok: 0, pick: null, opts: null, source };
+  tab = source === "daily" ? "home" : "words";
+  sub = wrongQuiz;
+  render();
+}
+function wrongQuiz() {
+  if (!wz || wz.i >= wz.list.length) {
+    const r = wz; wz = null;
+    $("main").innerHTML = `<div class="card flash"><div class="label">결과</div><div class="big">${r ? r.ok : 0} / ${r ? r.list.length : 0}</div>
+      <div class="muted">맞힌 문제는 오답 노트에서 빠졌습니다. 틀린 문제는 내일 다시 나옵니다.</div></div>
+      <div class="row"><button class="b p" id="fin">완료</button></div>`;
+    $("fin").onclick = () => { if (r && r.source === "daily") finish("wrong"); else show("words"); };
+    return;
+  }
+  const { key, item } = wz.list[wz.i];
+  const isKana = item.kind === "가나";
+  if (!wz.opts) {
+    const pool = isKana
+      ? KANA.flat().filter(Boolean).map(c => c.slice(1))
+      : [...LESSONS.flatMap(l => l.w).map(x => x[3]), ...Object.values(S.cards).map(c => c.mean)];
+    wz.opts = shuffle([item.a, ...shuffle(pool.filter((x, i, a) => x !== item.a && a.indexOf(x) === i)).slice(0, 3)]);
+  }
+  const days = keptDays(item);
+  const bigStyle = isKana ? ' style="font-size:64px"' : "";
+  $("main").innerHTML = `<button class="b" id="wback">← 돌아가기</button>
+  <div class="card flash"><div class="label">${wz.i + 1} / ${wz.list.length} · ${esc(item.kind)} · ${days ? days + "일째 오답 노트" : "오늘 틀림"} · 틀린 횟수 ${item.misses}</div>
+    <div class="big jp" data-say="${esc(item.q)}"${bigStyle}>${esc(item.q)}</div>
+    ${wz.pick && !isKana ? `<div class="ko-read">${esc(item.ko)}</div>${kanjiNote(item.jp, item.q)}` : ""}${spk(item.q)}</div>
+  <div class="choices">${wz.opts.map(o => `<button class="b ${wz.pick ? (o === item.a ? "ok" : o === wz.pick ? "ng" : "") : ""}" data-o="${esc(o)}" ${wz.pick ? "disabled" : ""}>${esc(o)}</button>`).join("")}</div>
+  ${wz.pick && isKana ? `<div class="card explain ${wz.pick === item.a ? "right" : "wrong"}">${kanaExplain(item.q, item.a, wz.pick)}</div>` : ""}
+  ${wz.pick ? `<button class="b p" id="nx">다음</button>` : ""}`;
+  $("wback").onclick = () => { wz = null; show(tab); };
+  document.querySelectorAll("[data-o]").forEach(b => b.onclick = () => {
+    wz.pick = b.dataset.o;
+    speak(item.q);
+    if (wz.pick === item.a) {
+      wz.ok++;
+      // 어제 이전에 들어온 오답이면 노트에서 빼고 기록으로 옮김
+      if (S.wrong[key] && S.wrong[key].added < today()) {
+        const done = Object.assign({}, S.wrong[key], { key, removed: today() });
+        delete S.wrong[key];
+        S.wrongDone = S.wrongDone || [];
+        S.wrongDone.push(done);
+      }
+    } else addWrong(key, Object.assign({}, item, { removed: undefined }));
+    save(); wrongQuiz();
+  });
+  if ($("nx")) $("nx").onclick = () => { wz.i++; wz.pick = null; wz.opts = null; wrongQuiz(); };
+}
+function wrongNote() {
+  const active = Object.entries(S.wrong || {}).map(([key, item]) => ({ key, item }));
+  const weeks = {};
+  allWrong().forEach(x => { const w = weekStart(x.item.added); (weeks[w] = weeks[w] || []).push(x); });
+  const wkeys = Object.keys(weeks).map(Number).sort((a, b) => b - a);
+  const row = ({ item }) => `<tr>
+      <td class="jp" style="font-size:18px">${esc(item.q)}${item.jp && item.jp !== item.q ? `<div class="muted" style="font-size:12px">${esc(item.jp)}</div>` : ""}</td>
+      <td>${esc(item.a)}</td><td class="muted">${keptDays(item) ? keptDays(item) + "일째" : "오늘"} · ${item.misses}회</td><td>${spk(item.q)}</td></tr>`;
+  return `
+  <div class="card"><div class="label">오답 노트 · 남은 문제 ${active.length}개</div>
+    <p class="muted" style="margin:4px 0">처음 풀 때 틀린 문제가 모입니다. 다음 날 오늘 학습에서 다시 나오고, 맞히면 빠집니다.</p>
+    <table>${active.sort((a, b) => keptDays(b.item) - keptDays(a.item)).map(row).join("") || `<tr><td class="muted">틀린 문제가 없습니다.</td></tr>`}</table></div>
+  <div class="card"><div class="label">주별 오답 복습</div>
+    <p class="muted" style="margin:4px 0">그 주에 틀린 문제를 모두 다시 풉니다. 오래 남아 있던 문제부터 보여 줍니다.</p>
+    <table>${wkeys.map(w => {
+      const xs = weeks[w];
+      const left = xs.filter(x => !x.item.removed).length;
+      const avg = (xs.reduce((n, x) => n + keptDays(x.item), 0) / xs.length).toFixed(1);
+      return `<tr><td>${dayLabel(w)} 주</td><td class="muted">${xs.length}문제 · 남음 ${left} · 평균 ${avg}일</td><td><button class="b" data-week="${w}">다시 풀기</button></td></tr>`;
+    }).join("") || `<tr><td class="muted">아직 기록이 없습니다.</td></tr>`}</table></div>`;
+}
+function bindWrongNote() {
+  document.querySelectorAll("[data-week]").forEach(b => b.onclick = () => {
+    const w = +b.dataset.week;
+    // 같은 문제가 여러 번 기록됐으면 한 번만 출제
+    const seen = new Set();
+    const items = allWrong().filter(x => weekStart(x.item.added) === w)
+      .sort((a, c) => keptDays(c.item) - keptDays(a.item))
+      .filter(x => !seen.has(x.key) && seen.add(x.key));
+    startWrong(null, "week", items);
+  });
 }
 
 // ── 단어장 ──
 function words() {
   const list = Object.entries(S.cards).reverse();
-  $("main").innerHTML = `
+  $("main").innerHTML = wrongNote() + `
   <div class="card"><div class="label">모르는 단어 직접 추가</div>
     <form id="f" class="row" style="margin-top:8px">
       <input id="iw" class="jp" placeholder="단어 (日本)" required>
@@ -340,22 +570,44 @@ function words() {
       <button class="b p">추가</button>
     </form></div>
   <div class="card"><div class="label">내 카드 ${list.length}개</div>
-  <table>${list.map(([k, c]) => `<tr><td class="jp" style="font-size:16px">${esc(c.jp)}<div class="ko-read" style="font-size:13px">${esc(c.ko)}</div></td><td>${esc(c.mean)}</td><td class="muted">${c.box}단계</td><td>${spk(c.kana || c.jp)}</td></tr>`).join("") || `<tr><td class="muted">아직 카드가 없습니다.</td></tr>`}</table></div>`;
+  <table>${list.map(([k, c]) => `<tr><td class="jp" style="font-size:16px">${esc(c.kana || c.jp)}${c.jp !== c.kana ? `<div class="muted" style="font-size:12px">${esc(c.jp)}</div>` : ""}<div class="ko-read" style="font-size:13px">${esc(c.ko)}</div></td><td>${esc(c.mean)}</td><td class="muted">${c.box}단계</td><td>${spk(c.kana || c.jp)}</td></tr>`).join("") || `<tr><td class="muted">아직 카드가 없습니다.</td></tr>`}</table></div>`;
   $("f").onsubmit = e => {
     e.preventDefault();
     addCard("내 단어", $("iw").value.trim(), $("ik").value.trim() || $("iw").value.trim(), $("ir").value.trim(), $("im").value.trim());
     save(); words();
   };
+  bindWrongNote();
 }
 
-// ── 가나 표: 아 에 이 오 우 순서 ──
+// ── 가나 표: 표준 오십음도 순서 (행 あかさたな…, 단 あいうえお) ──
 function kanaTable() {
-  const grid = (conv, rows) => `<div class="kgrid">${["아","에","이","오","우"].map(h => `<div class="h">${h}</div>`).join("")}${
-    rows.map(r => COLS.map(i => r[i] ? `<div class="jp" data-say="${r[i][0]}">${conv(r[i][0])}<small>${r[i].slice(1)}</small></div>` : `<div class="empty"></div>`).join("")).join("")}</div>`;
+  const cols = [0, 1, 2, 3, 4];
+  // 탁음 행 → 원래 행 (DAKU_BASE와 같은 대응, 표에서는 KANA.slice(11) 기준)
+  const baseOf = (ri, ci) => KANA[DAKU_BASE[ri]][ci][0];
+  const grid = (conv, rows, from, mark) => `<div class="kgrid">${cols.map(i => `<div class="h">${VOWEL[i]}</div>`).join("")}${
+    rows.map((r, k) => cols.map(i => r[i]
+      ? `<div class="jp" data-say="${r[i][0]}">${conv(r[i][0])}<small>${mark ? esc(conv(baseOf(from + k, i))) + (from + k === 15 ? "+゜" : "+゛") + " · " : ""}${r[i].slice(1)}</small></div>`
+      : `<div class="empty"></div>`).join("")).join("")}</div>`;
+  const MODES = {
+    hira: ["히라가나", () => grid(x => x, KANA.slice(0, 11), 0)],
+    kata: ["가타카나", () => grid(toKata, KANA.slice(0, 11), 0)],
+    daku: ["탁음·반탁음", () => `
+      <div class="marks">
+        <div><span class="jp mk">゛</span><b>탁점</b> 점 두 개. 글자 오른쪽 위에 찍으면 소리가 탁해집니다.
+          <div class="jp ex">か 카 → が 가 · さ 사 → ざ 자 · た 타 → だ 다 · は 하 → ば 바</div></div>
+        <div><span class="jp mk">゜</span><b>반탁점</b> 작은 동그라미. は행에만 붙고, ㅎ 소리가 ㅍ 소리로 바뀝니다.
+          <div class="jp ex">は 하 → ぱ 파 · ひ 히 → ぴ 피 · ふ 후 → ぷ 푸</div></div>
+      </div>
+      <div class="label" style="margin-top:12px">히라가나</div>${grid(x => x, KANA.slice(11), 11, true)}
+      <div class="label" style="margin-top:12px">가타카나</div>${grid(toKata, KANA.slice(11), 11, true)}`]
+  };
+  let mode = "hira";
+  try { mode = localStorage.getItem("kana-mode") || "hira"; } catch (e) {}
+  if (!MODES[mode]) mode = "hira";
   $("main").innerHTML = `
-  <div class="card"><div class="label">히라가나 · 글자를 누르면 소리가 납니다</div><div style="margin-top:8px">${grid(x => x, KANA.slice(0, 11))}</div></div>
-  <div class="card"><div class="label">가타카나</div><div style="margin-top:8px">${grid(toKata, KANA.slice(0, 11))}</div></div>
-  <div class="card"><div class="label">탁음 · 반탁음 (ひらがな / カタカナ)</div><div style="margin-top:8px">${grid(x => x + " " + toKata(x), KANA.slice(11))}</div></div>`;
+  <div class="seg" role="tablist">${Object.entries(MODES).map(([k, m]) => `<button id="km-${k}" aria-selected="${k === mode}">${m[0]}</button>`).join("")}</div>
+  <div class="card"><div class="label">${MODES[mode][0]} · 글자를 누르면 소리가 납니다</div><div style="margin-top:8px">${MODES[mode][1]()}</div></div>`;
+  Object.keys(MODES).forEach(k => $("km-" + k).onclick = () => { try { localStorage.setItem("kana-mode", k); } catch (e) {} kanaTable(); });
 }
 
 // ── 설정: 백업 ──
@@ -397,7 +649,7 @@ function settings() {
     pickVoice(); speak("こんにちは");
     const vs = speechSynthesis.getVoices();
     $("tts-msg").textContent = jaVoice
-      ? `일본어 음성: ${jaVoice.name}. 소리가 안 나면 폰 볼륨(미디어 볼륨)과 무음 모드를 확인하세요.`
+      ? `사용 중인 음성: ${jaVoice.name} (${jaVoice.localService ? "설치된 음성" : "온라인 음성"}). 일본어 음성 전체: ${vs.filter(v => /^ja/i.test(v.lang)).map(v => v.name).join(", ")}. 소리가 안 나면 폰 볼륨(미디어 볼륨)과 무음 모드를 확인하세요.`
       : `일본어 음성을 찾지 못했습니다 (전체 음성 ${vs.length}개). 폰 설정의 텍스트 음성 변환에서 Google 음성 서비스의 일본어 음성 데이터를 설치하세요.`;
   };
   $("go").onclick = () => { const n = +$("jump").value; if (n >= 1 && n <= LESSONS.length) { S.lesson = n - 1; S.steps = {}; save(); show("home"); } };
