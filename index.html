@@ -180,7 +180,7 @@ function render() {
 // ── 오늘 학습 ──
 const STEPS = [
   ["kana", "가나 읽기 퀴즈", "20문제 · 범위 선택 · 약 5분"],
-  ["word", "새 단어 10개", "보고 듣기, 퀴즈 · 약 7분"],
+  ["word", "새 단어 묶음 학습", "3~4개씩 묶어 학습 → 묶음 퀴즈 → 최종 확인 · 약 7분"],
   ["expr", "새 표현 6개", "오늘 단어로 만든 문장, 듣고 따라 말하기 · 약 12분"],
   ["rev", "복습 카드", "오늘 돌아온 카드 전부 · 약 10분"]
 ];
@@ -417,27 +417,54 @@ function exprStep() {
   $("nx").onclick = next;
 }
 
-// 3단계: 새 단어 (목록 → 뜻 맞히기)
+// 3단계: 새 단어 — 3~4개씩 묶어 학습: 묶음 학습 → 묶음 퀴즈 → 마지막 뒤섞기 확인
 let wq = null;
 // 한자 표기가 가나와 다를 때만 작게 보여 줌
 const kanjiNote = (jp, kana) => jp && jp !== kana ? `<div class="kanji muted jp">한자 ${esc(jp)}</div>` : "";
+const wordRow = w => `<tr><td class="w jp" data-say="${esc(w[1])}">${esc(w[1])}${w[0] !== w[1] ? `<div class="muted" style="font-size:13px">${esc(w[0])}</div>` : ""}</td><td><div class="ko-read" style="font-size:14px">${esc(w[2])}</div></td><td>${esc(w[3])}</td><td>${spk(w[1])}</td></tr>`;
 function wordStep() {
   const W = LESSONS[S.lesson].w;
   if (!wq) {
+    // 4개 넘지 않게 묶되 묶음 수가 같으면 크기를 고르게 (10개 → 4·4·2)
+    const nG = Math.max(1, Math.ceil(W.length / 4)), sz = Math.ceil(W.length / nG);
+    const gs = [];
+    for (let i = 0; i < W.length; i += sz) gs.push(W.slice(i, i + sz));
+    wq = { gs, gi: 0, phase: "study", qs: [], qs0: 0, i: 0, ok: 0, totOk: 0, totN: 0, pick: null, opts: null };
+  }
+  // 묶음 학습: 한 화면에 3~4개만 보여 주고 발음을 확인한다
+  if (wq.phase === "study") {
+    const g = wq.gs[wq.gi], before = wq.gs.slice(0, wq.gi).reduce((a, x) => a + x.length, 0);
     $("main").innerHTML = `${back}
-    <div class="card"><div class="label">새 단어 ${W.length}개 · 가나를 소리 내어 읽고 눌러서 발음을 확인하세요</div>
-    <table>${W.map(w => `<tr><td class="w jp" data-say="${esc(w[1])}">${esc(w[1])}${w[0] !== w[1] ? `<div class="muted" style="font-size:13px">${esc(w[0])}</div>` : ""}</td><td><div class="ko-read" style="font-size:14px">${esc(w[2])}</div></td><td>${esc(w[3])}</td><td>${spk(w[1])}</td></tr>`).join("")}</table></div>
-    <button class="b p" id="go">퀴즈 시작</button>`;
+    <div class="card"><div class="label">새 단어 ${W.length}개 · 묶음 ${wq.gi + 1} / ${wq.gs.length}${before ? ` · 지금까지 ${before}개` : ""}</div>
+    <table>${g.map(wordRow).join("")}</table></div>
+    <button class="b p" id="go">이 묶음 퀴즈</button>`;
     bindBack();
-    // 문제 두 종류: 가나 → 뜻, 뜻 → 가나. 단어마다 한 번씩
-    $("go").onclick = () => { wq = { i: 0, ok: 0, qs: shuffle([...W.map(w => [w, "k2m"]), ...W.map(w => [w, "m2k"])]), pick: null }; render(); };
+    $("go").onclick = () => { wq.qs = shuffle([...g.map(w => [w, "k2m"]), ...g.map(w => [w, "m2k"])]); wq.qs0 = wq.qs.length; wq.i = 0; wq.ok = 0; wq.pick = null; wq.opts = null; wq.phase = "quiz"; render(); };
     return;
   }
-  if (wq.i >= wq.qs.length) {
-    const r = wq; wq = null;
-    $("main").innerHTML = `<div class="card flash"><div class="label">결과</div><div class="big">${r.ok} / ${r.qs.length}</div></div>
+  // 퀴즈가 끝난 직후: 묶음이면 묶음 결과로, 최종이면 전체 결과로
+  if ((wq.phase === "quiz" || wq.phase === "final") && wq.i >= wq.qs.length) {
+    if (wq.phase === "quiz") { wq.totOk += wq.ok; wq.totN += wq.qs0; wq.gi++; wq.phase = "gdone"; render(); return; }
+    $("main").innerHTML = `<div class="card flash"><div class="label">결과</div>
+      <div class="big">${W.length}개 학습 완료</div>
+      <div class="muted">묶음 퀴즈 ${wq.totOk} / ${wq.totN} · 최종 확인 ${wq.ok} / ${wq.qs0} (둘 다 처음에 맞힌 개수)</div>
+      <div class="muted">단어는 내일부터 복습 카드로 돌아옵니다.</div></div>
       <div class="row"><button class="b p" id="fin">완료</button></div>`;
-    $("fin").onclick = () => finish("word");
+    $("fin").onclick = () => { wq = null; finish("word"); };
+    return;
+  }
+  // 묶음 결과 화면: 다음 묶음, 또는 마지막이면 최종 확인 퀴즈로
+  if (wq.phase === "gdone") {
+    const last = wq.gi >= wq.gs.length;
+    $("main").innerHTML = `${back}<div class="card flash"><div class="label">묶음 ${wq.gi} / ${wq.gs.length} 완료</div>
+      <div class="big">처음에 ${wq.ok} / ${wq.qs0}</div>
+      <div class="muted">${last ? "이제 오늘 단어를 전부 뒤섞어 확인합니다. 단어마다 한 문제씩입니다." : "다음 묶음으로 넘어갑니다."}</div></div>
+      <div class="row"><button class="b p" id="go">${last ? "최종 확인 퀴즈 시작" : "다음 묶음"}</button></div>`;
+    bindBack();
+    $("go").onclick = () => {
+      if (!last) { wq.phase = "study"; render(); return; }
+      wq.qs = shuffle(W.map(w => [w, Math.random() < .5 ? "k2m" : "m2k"])); wq.qs0 = wq.qs.length; wq.i = 0; wq.ok = 0; wq.pick = null; wq.opts = null; wq.phase = "final"; render();
+    };
     return;
   }
   const [w, type, retry] = wq.qs[wq.i];
@@ -449,11 +476,12 @@ function wordStep() {
     if (type === "m2k") pool = shuffle(pool).sort((a, b) => Math.abs(a.length - ans.length) - Math.abs(b.length - ans.length)).slice(0, 12);
     wq.opts = shuffle([ans, ...shuffle(pool).slice(0, 3)]);
   }
+  const lbl = wq.phase === "final" ? `최종 확인 · ${wq.i + 1} / ${wq.qs.length}` : `묶음 ${wq.gi + 1} / ${wq.gs.length} · 문제 ${wq.i + 1} / ${wq.qs.length}`;
   const q = type === "k2m"
-    ? `<div class="label">${wq.i + 1} / ${wq.qs.length} · 가나를 읽고 뜻을 고르세요</div>
+    ? `<div class="label">${lbl} · 가나를 읽고 뜻을 고르세요</div>
        <div class="big jp" data-say="${esc(w[1])}">${esc(w[1])}</div>
        ${wq.pick ? `<div class="ko-read">${esc(w[2])}</div>${kanjiNote(w[0], w[1])}` : ""}`
-    : `<div class="label">${wq.i + 1} / ${wq.qs.length} · 뜻에 맞는 가나를 고르세요</div>
+    : `<div class="label">${lbl} · 뜻에 맞는 가나를 고르세요</div>
        <div class="big">${esc(w[3])}</div>
        ${wq.pick ? `<div class="jp" style="font-size:22px">${esc(w[1])}</div><div class="ko-read">${esc(w[2])}</div>${kanjiNote(w[0], w[1])}` : ""}`;
   $("main").innerHTML = `${back}
@@ -462,7 +490,7 @@ function wordStep() {
   ${wq.pick ? `<button class="b p" id="nx">다음</button>` : ""}`;
   bindBack();
   document.querySelectorAll("[data-o]").forEach(b => b.onclick = () => {
-    wq.pick = b.dataset.o; if (wq.pick === ans) wq.ok++; else { wq.qs.push([w, type, 1]); if (!retry) addWrong("단어|" + w[1], { kind: "단어", q: w[1], a: w[3], ko: w[2], jp: w[0] }); } speak(w[1]); render();
+    wq.pick = b.dataset.o; if (wq.pick === ans) { if (!retry) wq.ok++; } else { wq.qs.push([w, type, 1]); if (!retry) addWrong("단어|" + w[1], { kind: "단어", q: w[1], a: w[3], ko: w[2], jp: w[0] }); } speak(w[1]); render();
   });
   if ($("nx")) $("nx").onclick = () => { wq.i++; wq.pick = null; wq.opts = null; render(); };
 }
