@@ -428,6 +428,16 @@ function wordStep() {
   const W = LESSONS[S.lesson].w;
   // 과가 바뀌면 단어 진도를 처음으로, 하루에 새 단어는 4개까지
   if (S.wordIdxLesson !== S.lesson) { S.wordIdxLesson = S.lesson; S.wordIdx = 0; }
+  if (!wq && S.wordDay === today() && S.wordIdx > 0) {
+    const left = W.length - S.wordIdx;
+    $("main").innerHTML = `${back}<div class="card flash"><div class="big">오늘 단어 학습을 마쳤습니다</div>
+      <div class="muted">${left > 0 ? `이 과에 단어가 ${left}개 남았고, 내일 ${Math.min(WORDS_DAY, left)}개가 새로 나옵니다.` : `이 과의 단어를 모두 배웠습니다.`}</div>
+      <div class="muted">오늘 배운 단어는 내일부터 복습 카드로 돌아옵니다.</div></div>
+      <div class="row"><button class="b p" id="fin">완료</button></div>`;
+    bindBack();
+    $("fin").onclick = () => { sub = null; tab = "home"; show("home"); };
+    return;
+  }
   if (!wq) {
     const D = W.slice(S.wordIdx, S.wordIdx + WORDS_DAY);
     if (!D.length) {
@@ -469,6 +479,12 @@ function wordStep() {
     wq.D.forEach(w => addCard("단어", w[0], w[1], w[2], w[3]));
     S.wordIdx = wq.base + wq.D.length;
     const lessonDone = S.wordIdx >= W.length, left = W.length - S.wordIdx;
+    S.wordDay = today();
+    if (!lessonDone) {
+      // 하루 세트(4개)를 마친 시점에서 그날 단어 단계는 완료로 잠근다. 다음 세트는 내일
+      S.steps["word"] = 1;
+      S.log[today()] = (S.log[today()] || 0) + 1;
+    }
     save();
     $("main").innerHTML = `<div class="card flash"><div class="label">결과</div>
       <div class="big">오늘 ${wq.D.length}개 완료 · 처음에 ${wq.ok} / ${wq.qs0}</div>
