@@ -467,7 +467,11 @@ function wordStep() {
     $("slow").onclick = () => speak(w[1], 0.55);
     $("nx").onclick = () => {
       if (wq.di === wq.D.length - 1) {
-        wq.qs = shuffle([...wq.D.map(w => [w, "k2m"]), ...wq.D.map(w => [w, "m2k"])]);
+        // 퀴즈: 오늘 4개는 두 문제씩, 어제 배운 4개는 한 문제씩 섞여 나온다
+        let qs = [...wq.D.map(w => [w, "k2m"]), ...wq.D.map(w => [w, "m2k"])];
+        wq.prev = (S.lastSet && S.lastSet.day === today() - 1) ? S.lastSet.ws : [];
+        wq.prev.forEach((w, j) => qs.push([w, j % 2 ? "k2m" : "m2k"]));
+        wq.qs = shuffle(qs);
         wq.qs0 = wq.qs.length; wq.i = 0; wq.ok = 0; wq.pick = null; wq.opts = null; wq.phase = "quiz";
       } else wq.di++;
       render();
@@ -478,6 +482,8 @@ function wordStep() {
   if (wq.phase === "quiz" && wq.i >= wq.qs.length) {
     wq.D.forEach(w => addCard("단어", w[0], w[1], w[2], w[3]));
     S.wordIdx = wq.base + wq.D.length;
+    // 방금 학습한 세트를 저장: 다음 날 퀴즈에 한 문제씩 섞여 나온다
+    S.lastSet = { day: today(), ws: wq.D };
     const lessonDone = S.wordIdx >= W.length, left = W.length - S.wordIdx;
     S.wordDay = today();
     if (!lessonDone) {
@@ -487,7 +493,7 @@ function wordStep() {
     }
     save();
     $("main").innerHTML = `<div class="card flash"><div class="label">결과</div>
-      <div class="big">오늘 ${wq.D.length}개 완료 · 처음에 ${wq.ok} / ${wq.qs0}</div>
+      <div class="big">오늘 ${wq.D.length}개 완료${wq.prev && wq.prev.length ? ` · 어제 ${wq.prev.length}개 포함 퀴즈` : ""} · 처음에 ${wq.ok} / ${wq.qs0}</div>
       <div class="muted">단어는 내일부터 복습 카드로 돌아옵니다.</div>
       ${lessonDone ? `<div class="muted">이 과의 단어를 모두 배웠습니다. 다른 단계를 마치고 다음 과로 넘어가세요.</div>`
       : `<div class="muted">이 과에 단어가 ${left}개 남았고, 내일 ${Math.min(WORDS_DAY, left)}개가 새로 나옵니다.</div>`}</div>
