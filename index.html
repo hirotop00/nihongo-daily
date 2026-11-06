@@ -106,7 +106,7 @@ const KEY = "nihongo-v2";
 let S = { lesson: 0, stepsDay: -1, steps: {}, skipped: {}, cards: {}, log: {}, wrong: {}, wrongDone: [], wordIdx: 0, wordIdxLesson: -1 };
 try { const v = localStorage.getItem(KEY); if (v) S = Object.assign(S, JSON.parse(v)); } catch (e) {}
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} stat(); }
-function ensureDay() { if (!S.skipped) S.skipped = {}; if (S.stepsDay !== today()) { S.stepsDay = today(); S.steps = {}; S.skipped = {}; save(); } }
+function ensureDay() { if (!S.skipped) S.skipped = {}; if (S.stepsDay < today()) { S.stepsDay = today(); S.steps = {}; S.skipped = {}; save(); } }
 
 // 발음 듣기
 // 발음 재생. 안드로이드 Chrome은 정지 직후 재생을 무시할 때가 있어 정지가 필요할 때만 잠깐 쉬었다가 재생한다
@@ -203,6 +203,7 @@ function home() {
     <h2 style="font-size:22px;margin-top:2px">${esc(L.t)}</h2>
     <div class="bar" style="margin-top:10px"><i style="width:${doneN / STEPS.length * 100}%"></i></div>
     <div class="muted" style="margin-top:4px">${doneN} / ${STEPS.length} 단계 완료${skipN ? ` · ${skipN}개 건너뜀` : ""}</div>
+    ${S.stepsDay > today() ? `<div class="muted">오늘을 마감했습니다 — 아래는 내일 다시 배정된 목록입니다.</div>` : ""}
   </div>
   <div class="steps">${STEPS.map((s, i) => `
     <div class="steprow">
@@ -216,7 +217,8 @@ function home() {
     <p class="muted">새 표현과 단어는 내일부터 복습 카드로 돌아옵니다.</p>
     ${S.lesson < LESSONS.length - 1 ? `<button class="b p" id="next">다음 과로 넘어가기</button>` : `<p>${LESSONS.length}과를 모두 마쳤습니다. 복습을 계속하세요.</p>`}</div>`
   : doneN + skipN === STEPS.length ? `<div class="card"><h2>오늘은 여기까지입니다.</h2>
-    <p class="muted">건너뛴 ${skipN}개는 내일 다시 배정됩니다. 다음 과는 모든 단계를 마쳤을 때 열립니다.</p></div>` : ""}`;
+    <p class="muted">건너뛴 ${skipN}개는 다음 날 배정에서 다시 나타납니다. 아래 버튼을 누르면 지금 바로 다음 날 배정으로 바뀝니다.</p>
+    <button class="b p" id="rollover">오늘 마감하고 내일 배정으로 넘기기</button></div>` : ""}`;
   document.querySelectorAll("[data-step]").forEach(b => b.onclick = () => {
     if (b.dataset.step === "wrong") { startWrong(pendingWrong(), "daily"); return; }
     sub = { kana: kanaQuiz, expr: exprStep, word: wordStep, rev: () => { fromStep = true; sub = null; show("review"); } }[b.dataset.step];
@@ -227,6 +229,10 @@ function home() {
     if (S.skipped[k]) delete S.skipped[k]; else S.skipped[k] = 1;
     save(); render();
   });
+  if ($("rollover")) $("rollover").onclick = () => {
+    // 오늘을 마감하고 바로 다음 날 배정 상태로 넘긴다: 하루치 진행이 두 번 밀리지 않는다
+    S.stepsDay = today() + 1; S.steps = {}; S.skipped = {}; save(); render();
+  };
   if ($("next")) $("next").onclick = () => { S.lesson++; S.steps = {}; S.skipped = {}; save(); render(); };
 }
 function finish(step) {
