@@ -41,6 +41,11 @@ nav button[aria-selected="true"]{color:var(--ai);font-weight:600}
 .step.done .n{background:var(--good);color:var(--bg)}
 .step .t{flex:1}
 .step small{display:block;color:var(--mute);font-size:12px}
+.steprow{display:flex;gap:8px;align-items:stretch}
+.steprow .step{flex:1;min-width:0}
+.skipb{flex:none;padding:0 12px;border:1px dashed var(--line);border-radius:10px;background:none;color:var(--mute);font:inherit;font-size:13px;cursor:pointer}
+.step.skip{opacity:.55}
+.step.skip .n{background:var(--line);color:var(--mute)}
 .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--ai)}
 .flash{text-align:center;min-height:190px;display:grid;place-content:center;gap:4px}
@@ -98,10 +103,10 @@ const today = () => Math.floor((Date.now() - new Date().getTimezoneOffset() * 6e
 
 // 상태: lesson 현재 과, steps 오늘 단계 완료 여부, cards 복습 카드, log 날짜별 학습 기록
 const KEY = "nihongo-v2";
-let S = { lesson: 0, stepsDay: -1, steps: {}, cards: {}, log: {}, wrong: {}, wrongDone: [], wordIdx: 0, wordIdxLesson: -1 };
+let S = { lesson: 0, stepsDay: -1, steps: {}, skipped: {}, cards: {}, log: {}, wrong: {}, wrongDone: [], wordIdx: 0, wordIdxLesson: -1 };
 try { const v = localStorage.getItem(KEY); if (v) S = Object.assign(S, JSON.parse(v)); } catch (e) {}
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} stat(); }
-function ensureDay() { if (S.stepsDay !== today()) { S.stepsDay = today(); S.steps = {}; save(); } }
+function ensureDay() { if (!S.skipped) S.skipped = {}; if (S.stepsDay !== today()) { S.stepsDay = today(); S.steps = {}; S.skipped = {}; save(); } }
 
 // 발음 듣기
 // 발음 재생. 안드로이드 Chrome은 정지 직후 재생을 무시할 때가 있어 정지가 필요할 때만 잠깐 쉬었다가 재생한다
@@ -190,28 +195,39 @@ function home() {
   const L = LESSONS[S.lesson];
   const STEPS = steps();
   const doneN = STEPS.filter(s => S.steps[s[0]]).length;
+  const skipN = STEPS.filter(s => !S.steps[s[0]] && S.skipped[s[0]]).length;
   const all = doneN === STEPS.length;
   $("main").innerHTML = `
   <div class="card">
     <div class="label">${S.lesson + 1}과 · 오늘의 주제</div>
     <h2 style="font-size:22px;margin-top:2px">${esc(L.t)}</h2>
     <div class="bar" style="margin-top:10px"><i style="width:${doneN / STEPS.length * 100}%"></i></div>
-    <div class="muted" style="margin-top:4px">${doneN} / ${STEPS.length} 단계 완료</div>
+    <div class="muted" style="margin-top:4px">${doneN} / ${STEPS.length} 단계 완료${skipN ? ` · ${skipN}개 건너뜀` : ""}</div>
   </div>
   <div class="steps">${STEPS.map((s, i) => `
-    <button class="step ${S.steps[s[0]] ? "done" : ""}" data-step="${s[0]}">
-      <span class="n">${S.steps[s[0]] ? "✓" : i + 1}</span>
-      <span class="t">${s[1]}<small>${s[2]}</small></span><span class="muted">›</span>
-    </button>`).join("")}</div>
+    <div class="steprow">
+      <button class="step ${S.steps[s[0]] ? "done" : ""} ${!S.steps[s[0]] && S.skipped[s[0]] ? "skip" : ""}" data-step="${s[0]}">
+        <span class="n">${S.steps[s[0]] ? "✓" : !S.steps[s[0]] && S.skipped[s[0]] ? "–" : i + 1}</span>
+        <span class="t">${s[1]}<small>${!S.steps[s[0]] && S.skipped[s[0]] ? "건너뜀 · 내일 다시 배정됩니다" : s[2]}</small></span><span class="muted">›</span>
+      </button>
+      ${!S.steps[s[0]] ? `<button class="skipb" data-skip="${s[0]}">${S.skipped[s[0]] ? "되돌리기" : "건너뛰기"}</button>` : ""}
+    </div>`).join("")}</div>
   ${all ? `<div class="card"><h2>오늘 학습을 마쳤습니다.</h2>
     <p class="muted">새 표현과 단어는 내일부터 복습 카드로 돌아옵니다.</p>
-    ${S.lesson < LESSONS.length - 1 ? `<button class="b p" id="next">다음 과로 넘어가기</button>` : `<p>${LESSONS.length}과를 모두 마쳤습니다. 복습을 계속하세요.</p>`}</div>` : ""}`;
+    ${S.lesson < LESSONS.length - 1 ? `<button class="b p" id="next">다음 과로 넘어가기</button>` : `<p>${LESSONS.length}과를 모두 마쳤습니다. 복습을 계속하세요.</p>`}</div>`
+  : doneN + skipN === STEPS.length ? `<div class="card"><h2>오늘은 여기까지입니다.</h2>
+    <p class="muted">건너뛴 ${skipN}개는 내일 다시 배정됩니다. 다음 과는 모든 단계를 마쳤을 때 열립니다.</p></div>` : ""}`;
   document.querySelectorAll("[data-step]").forEach(b => b.onclick = () => {
     if (b.dataset.step === "wrong") { startWrong(pendingWrong(), "daily"); return; }
     sub = { kana: kanaQuiz, expr: exprStep, word: wordStep, rev: () => { fromStep = true; sub = null; show("review"); } }[b.dataset.step];
     render();
   });
-  if ($("next")) $("next").onclick = () => { S.lesson++; S.steps = {}; save(); render(); };
+  document.querySelectorAll("[data-skip]").forEach(b => b.onclick = () => {
+    const k = b.dataset.skip;
+    if (S.skipped[k]) delete S.skipped[k]; else S.skipped[k] = 1;
+    save(); render();
+  });
+  if ($("next")) $("next").onclick = () => { S.lesson++; S.steps = {}; S.skipped = {}; save(); render(); };
 }
 function finish(step) {
   S.steps[step] = 1;
