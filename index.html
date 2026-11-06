@@ -435,17 +435,27 @@ function wordStep() {
       <div class="muted">오늘 배운 단어는 내일부터 복습 카드로 돌아옵니다.</div></div>
       <div class="row"><button class="b p" id="fin">완료</button></div>`;
     bindBack();
-    $("fin").onclick = () => { sub = null; tab = "home"; show("home"); };
+    // 마지막 날 퀴즈를 마치고 완료를 누르지 않은 채 빠져나온 경우: 여기서라도 단어를 완료로 체크한다
+    $("fin").onclick = () => {
+      if (left === 0 && !S.steps["word"]) finish("word");
+      else { sub = null; tab = "home"; show("home"); }
+    };
     return;
   }
   if (!wq) {
+    // 매일 새 단어는 언제나 4개: 옛 버전 기록 때문에 마지막 날 개수가 어긋나면 시작을 4개 세트로 되돌린다
+    if (S.wordIdx > 0 && S.wordIdx < W.length && W.length >= WORDS_DAY && W.length - S.wordIdx < WORDS_DAY) S.wordIdx = W.length - WORDS_DAY;
     const D = W.slice(S.wordIdx, S.wordIdx + WORDS_DAY);
     if (!D.length) {
       $("main").innerHTML = `${back}<div class="card flash"><div class="big">이 과의 단어를 모두 배웠습니다</div>
-        <div class="muted">단어는 내일부터 복습 카드로 돌아옵니다. 다른 단계를 마치고 다음 과로 넘어가세요.</div></div>
-        <div class="row"><button class="b p" id="fin">완료</button></div>`;
+        <div class="muted">단어는 내일부터 복습 카드로 돌아옵니다. 아래 완료를 누르면 단어 단계가 체크되고 다음 과로 넘어갈 수 있습니다.</div></div>
+      <div class="row"><button class="b p" id="fin">완료</button></div>`;
       bindBack();
-      $("fin").onclick = () => { sub = null; tab = "home"; show("home"); };
+      // 단어를 전부 배운 상태라면 완료가 단어 단계를 체크한다 (이미 체크된 과면 홈으로만)
+      $("fin").onclick = () => {
+        if (!S.steps["word"]) finish("word");
+        else { sub = null; tab = "home"; show("home"); }
+      };
       return;
     }
     wq = { D, di: 0, base: S.wordIdx, phase: "study", qs: [], qs0: 0, i: 0, ok: 0, pick: null, opts: null };
